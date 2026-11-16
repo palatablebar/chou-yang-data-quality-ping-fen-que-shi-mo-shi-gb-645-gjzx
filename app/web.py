@@ -20,6 +20,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 NAV = (
     ("/", "报告", "index"),
+    ("/returns", "回传", "returns"),
     ("/profile", "画像", "profile"),
     ("/missing", "缺失", "missing"),
     ("/duplicates", "重复", "duplicates"),

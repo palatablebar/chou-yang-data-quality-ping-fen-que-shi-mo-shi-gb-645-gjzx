@@ -207,6 +207,9 @@ span.sev--pass { color: var(--ok); }
 .ledger thead th[aria-sort="descending"]::after { content: " ↓"; color: var(--accent); }
 
 .sub { display: block; font-family: var(--font-mono); font-size: 10px; color: var(--ink-muted); }
+.note-cell { font-family: var(--font-ui); font-size: 12px; color: var(--ink-soft); line-height: 1.55; }
+.lede { margin: 0 0 8px; font-size: 15px; }
+.row--on td { background: var(--accent-soft); }
 .mono { font-family: var(--font-mono); font-size: 11px; }
 .tag {
   font-family: var(--font-ui);

@@ -127,6 +127,24 @@ WEIGHTS: tuple[dict, ...] = (
 )
 WEIGHT_MAP = {item["key"]: item for item in WEIGHTS}
 
+# 回传字段质量：只评「已回传代表记录」的字段，重复归差异账不进质量分母。
+# 三维护封顶合计 75，按 100/75 折算成 0–100 分，避免各维权重之和不是 100 时
+# 分数无法与主评分比较；未回传工单不进任何分母。
+RETURN_QUALITY_WEIGHTS: tuple[dict, ...] = (
+    {"key": "missing", "label": "缺失", "cap": "30", "tolerance": "0.0800"},
+    {"key": "format", "label": "格式", "cap": "25", "tolerance": "0.0500"},
+    {"key": "outlier", "label": "离群", "cap": "20", "tolerance": "0.1000"},
+)
+RETURN_QUALITY_CAP_TOTAL = sum(Decimal(item["cap"]) for item in RETURN_QUALITY_WEIGHTS)
+RETURN_QUALITY_FORMULA = (
+    "已回传字段质量分 = 100 × (1 − 加权扣分 ÷ 75)；"
+    "加权扣分 = 缺失封顶30 + 格式封顶25 + 离群封顶20，每维按容忍度封顶（范围 0–100）"
+)
+RETURN_BATCH_FORMULA = (
+    "批次分 = 已回传字段质量分 × 回传覆盖率（范围 0–100）；"
+    "100 = 批次分 + 质量扣分 + 覆盖扣分"
+)
+
 GRADES: tuple[dict, ...] = (
     {"grade": "A", "floor": "90", "label": "可用"},
     {"grade": "B", "floor": "75", "label": "待复核"},
@@ -138,6 +156,58 @@ SEVERITY_BANDS: tuple[dict, ...] = (
     {"key": "severe", "label": "严重", "floor": "0.60"},
     {"key": "warn", "label": "警告", "floor": "0.30"},
     {"key": "hint", "label": "提示", "floor": "0.0001"},
+)
+
+# 回传核对：计划名单 vs 附件。
+# 四类差异互斥且覆盖附件全部采纳记录：未回传是名单侧缺口，其余三类是附件侧差异。
+RETURN_DIFFS: tuple[dict, ...] = (
+    {"key": "unreturned", "label": "未回传",
+     "definition": "计划名单内、所有附件中都没有对应工单号的工单",
+     "unit": "工单", "code": "K_UNRETURNED"},
+    {"key": "off_roster", "label": "名单外",
+     "definition": "附件中出现、但工单号不在计划名单内的记录",
+     "unit": "记录", "code": "K_OFF_ROSTER"},
+    {"key": "duplicate", "label": "重复记录",
+     "definition": "同一名单工单在附件中出现多次时，除代表记录以外的记录",
+     "unit": "记录", "code": "K_DUP_RETURN"},
+    {"key": "missing_fields", "label": "缺字段",
+     "definition": "已回传名单工单的代表记录中，至少有一个契约字段为缺失的记录",
+     "unit": "记录", "code": "K_MISSING_FIELD"},
+)
+RETURN_DIFF_MAP = {item["key"]: item for item in RETURN_DIFFS}
+
+# 回传覆盖率分档：只描述名单覆盖，不参与字段质量分。
+COVERAGE_BANDS: tuple[dict, ...] = (
+    {"grade": "A", "floor": "0.9500", "label": "覆盖完整"},
+    {"grade": "B", "floor": "0.8000", "label": "少量缺件"},
+    {"grade": "C", "floor": "0.6000", "label": "缺口明显"},
+    {"grade": "D", "floor": "0.0000", "label": "覆盖不足"},
+)
+
+RETURN_SAMPLES: dict[str, str] = {
+    "returns_roster_48.csv": "回传样例 · 计划名单 48 单",
+    "returns_attachment_partial.csv": "回传样例 · 附件 40/48（含名单外、重复、缺字段）",
+}
+DEFAULT_RETURN_BATCH = "default"
+
+# 回传评分的三个口径：覆盖、字段质量、批次结论。
+# 字段质量分的分母只含「已回传代表记录 × 10 字段」，未回传工单绝不按整行缺失计入，
+# 否则低回传率会把质量分压到没有信息量；覆盖缺口只通过批次分的乘数体现。
+RETURN_SCOPES: tuple[dict, ...] = (
+    {"key": "coverage", "label": "回传覆盖率", "range": "0% – 100%",
+     "numerator": "已回传名单工单数", "denominator": "计划名单工单数",
+     "note": "只按工单号匹配；名单内重复工单先去重。",
+     "code": "K_RETURN_COVERAGE"},
+    {"key": "quality", "label": "已回传字段质量分", "range": "0 – 100 分",
+     "numerator": "缺失 / 格式 / 离群三维封顶扣分（重复归附件差异账）",
+     "denominator": "已回传代表记录 × 10 字段",
+     "note": "只评已回传记录：未回传工单不进分母，名单外与重复记录也不进分母。",
+     "code": "K_RETURN_QUALITY"},
+    {"key": "batch", "label": "批次分", "range": "0 – 100 分",
+     "numerator": "已回传字段质量分 × 回传覆盖率",
+     "denominator": "—",
+     "note": "覆盖扣分 = 质量分 × (1 − 覆盖率)，质量扣分 = 100 − 质量分；三项闭合到 100。",
+     "code": "K_RETURN_BATCH"},
 )
 
 SAMPLES: dict[str, str] = {

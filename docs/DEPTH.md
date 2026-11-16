@@ -1,6 +1,6 @@
 # 深度登记 qualiscore（抽样数据质量评分与缺失模式）
 
-- 规模：中型（7 个功能模块 / 6 个应用页 / 97 条测试）
+- 规模：中型（8 个功能模块 / 7 个应用页 / 118 条测试）
 - 核心规则：**MAD 稳健 z + 退化回退 + 封顶加权评分**。逐格先判三态（缺失 / 格式不合格 / 有值），
   再按列算中位数与 MAD；`z = 0.6745 × (x − 中位数) / MAD`，MAD=0 时回退 `spread = 0.6745 × IQR / 1.349`，
   离散度低于「列刻度 × 5」或 MAD 与 IQR 同为 0 判退化；评分 = 100 − 缺失 30 − 重复 25 − 离群 20 − 格式 25，
@@ -19,6 +19,7 @@
 | M5 稳健离群 | 看逐列中位数、MAD、回退方法与离群格 | GET /api/outliers、页面 /outliers | `app/modules/m5_outliers/robust.py` `app/modules/m5_outliers/zscore.py` `app/modules/m5_outliers/flags.py` `app/modules/m5_outliers/service.py` | `tests/test_m5_outliers.py` |
 | M6 评分与批次 | 跑一次评分、查运行历史、看五项对账、重跑 | POST /api/score、GET /api/batches、GET /api/reconcile、页面 /batches | `app/modules/m6_score/score.py` `app/modules/m6_score/grade.py` `app/modules/m6_score/runstore.py` `app/modules/m6_score/service.py` | `tests/test_m6_score.py` |
 | M7 报告导出 | 看报告页、导出六种 CSV 与运行清单 | GET /、GET /api/export/* | `app/modules/m7_export/report.py` `app/modules/m7_export/csv_out.py` `app/modules/m7_export/manifest_out.py` `app/modules/m7_export/service.py` | `tests/test_m7_export.py` |
+| M8 回传核对 | 上传计划名单与回传附件，看四类差异、覆盖与字段质量、替换与重试账 | POST /api/returns/check、POST /api/returns/upload、GET /api/returns、页面 /returns | `app/modules/m8_returns/roster.py` `app/modules/m8_returns/reconcile.py` `app/modules/m8_returns/service.py` `app/modules/m8_returns/exports.py` | `tests/test_m8_returns.py` |
 
 端到端：`tests/test_e2e.py`（HTTP 走完采信 → 评分 → 六页 200 → 八种导出；含上传、失败输入、陈旧版本 409）。
 不变量：`tests/test_invariants.py`（行分区、单元格分区、分数闭合、幂等重跑、重复分区、顺序无关、缺失扣分单调）。
@@ -38,6 +39,11 @@
 | TRAP-19 | 一个单元格同时像缺失、越界、离群 | 按代码顺序覆盖，分项之和大于总分 | 固定优先级缺失 > 格式不合格 > 离群，一格只进一个桶 | `app/modules/m5_outliers/flags.py`、`app/modules/m2_profile/formats.py` | `tests/test_m5_outliers.py::test_priority_missing_over_range_over_outlier` |
 | TRAP-22 | 同一组重复行打乱顺序 | 代表行随顺序变化，导出结果不可复现 | 代表行取最小原始行号，组排序按代表行号 | `app/modules/m4_duplicates/groups.py`、`app/modules/m4_duplicates/hashdup.py` | `tests/test_m4_duplicates.py::test_order_independence_of_groups` |
 | TRAP-26 | 旧页面提交覆盖新结果 | 后提交无条件写入，新版本被旧数据顶掉 | 同名数据集版本自增，`expected_version` 落后即 409 | `app/modules/m6_score/runstore.py` | `tests/test_m6_score.py::test_stale_submission_rejected`、`tests/test_e2e.py::test_stale_version_conflict_over_http` |
+| TRAP-31 | 48 单只回传 40 单，把未回传 8 单按整行缺失记账 | 质量分被 8×10 个假缺失压到极低，分数只反映回传率，附件本身多干净都看不出 | 未回传工单不进质量分母；覆盖单独算，再用「质量分 × 覆盖率」合成批次分 | `app/modules/m8_returns/reconcile.py` | `tests/test_m8_returns.py::test_unreturned_not_in_quality_denominator` |
+| TRAP-32 | 只看附件、不看名单 | 只回传 2 条干净记录也拿 100 分，低回传率得到虚高结论 | 覆盖率并入批次分，结论里写明质量分不能外推到未回传工单 | `app/modules/m8_returns/reconcile.py`、`app/modules/m8_returns/exports.py` | `tests/test_m8_returns.py::test_low_coverage_cannot_claim_high_batch_score` |
+| TRAP-33 | 名单外记录、同键重复记录混进质量分母 | 同一工单被算两次，附件里混进别的批次也拉低质量分 | 四类差异互斥；只有已回传代表记录进质量分母，分区恒等式校验 | `app/modules/m8_returns/reconcile.py` | `tests/test_m8_returns.py::test_four_diff_classes_and_partition` |
+| TRAP-34 | 附件替换写到一半失败 | 半新半旧，旧版被覆盖后无法回退 | 先写完整快照再切指针；失败删未生效快照、指针回滚，旧版原文与结果保留 | `app/modules/m8_returns/service.py`、`app/store.py` | `tests/test_m8_returns.py::test_replacement_failure_keeps_old_version` |
+| TRAP-35 | 同一附件重试或网络重发 | 版本自增、记录重复计数，或重试后版本丢失 | 幂等键命中直接复用版本，尝试账只累加 hits；中断后重试补齐指针切换 | `app/modules/m8_returns/service.py` | `tests/test_m8_returns.py::test_same_input_replay_does_not_double_count`、`tests/test_m8_returns.py::test_retry_after_failure_succeeds_without_duplicate_counts` |
 
 ## 对账规则
 
@@ -51,12 +57,22 @@
 | 有值格账 | 有值 | 合格 + 格式不合格 | 496 = 494 + 2 |
 | 分数账 | 100 | 总分 + 扣分 | 100 = 65.24 + 34.76 |
 
+回传核对另有三项账，在 `/returns`、`/api/returns` 与回传导出里同源（回传样例实测值）：
+
+| 账 | 左侧 | 右侧 | 回传样例 |
+|---|---|---|---|
+| 附件记录账 | 44 | 代表 40 + 重复 2 + 名单外 2 | 44 = 40 + 2 + 2 |
+| 覆盖账 | 计划 48 | 已回传 40 + 未回传 8 | 48 = 40 + 8 |
+| 批次分数账 | 100 | 批次分 73.21 + 质量扣分 12.15 + 覆盖扣分 14.64 | 100 = 73.21 + 12.15 + 14.64 |
+
 ## 反例与不变量
 
 - 反例（朴素实现会挂）：`tests/test_m1_ingest.py::test_quoted_newline_kept_in_one_record`（`splitlines` 把一条记录切成两条）、
   `tests/test_m1_ingest.py::test_declared_gbk_on_utf8_file_surfaces_as_format_errors`（声明错编码不会崩，但乱码必须被格式维抓出）、
   `tests/test_m5_outliers.py::test_constant_column_is_degenerate`（均值+标准差在常量列上除零）、
-  `tests/test_m6_score.py::test_stale_submission_rejected`（后写覆盖会顶掉新版本）。
+  `tests/test_m6_score.py::test_stale_submission_rejected`（后写覆盖会顶掉新版本）、
+  `tests/test_m8_returns.py::test_unreturned_not_in_quality_denominator`（未回传按整行缺失会把质量分拖垮）、
+  `tests/test_m8_returns.py::test_low_coverage_cannot_claim_high_batch_score`（只看附件会得到 100 分虚高结论）。
 - 不变量：`tests/test_invariants.py::test_rows_partition_holds_for_all_samples`（行分区）、
   `tests/test_invariants.py::test_cells_partition_holds`（单元格分区）、
   `tests/test_invariants.py::test_score_closure_for_all_samples`（分数闭合）、
@@ -73,3 +89,5 @@
 - 只处理 UTF-8 / GB18030 两类编码；UTF-16、Big5、Shift-JIS 会落到 `E_DECODE`。
 - 稳健离群只支持数值列；日期列不做离群判定，文本列只做基数与格式检查。
 - 缺失模式只看「同列连续缺失」，不做跨文件的缺失趋势对比。
+- 回传核对按单批次核对，不做跨批次趋势；名单只认工单号，不校验名单里的其他字段；
+  附件中的隔离行与空行不计入四类差异，只在附件摘要里单列。

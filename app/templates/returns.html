@@ -1,0 +1,210 @@
+{% extends "base.html" %}
+{% block body %}
+<h1 class="title">回传核对</h1>
+
+{% if returns %}
+<section class="verdict">
+  <div class="verdict__score">
+    <span class="verdict__value">{{ returns.batch.score }}</span>
+    <span class="verdict__unit">分 · 批次分</span>
+  </div>
+  <div class="verdict__side">
+    <span class="grade grade--{{ returns.batch.grade.grade|lower }}">{{ returns.batch.grade.grade }} · {{ returns.batch.grade.label }}</span>
+    <span class="verdict__dataset">批次 {{ returns.run.batch }} · v{{ returns.run.version }}</span>
+    <span class="verdict__digest">输入 sha256 <code>{{ returns.run.digest[:16] }}</code></span>
+  </div>
+</section>
+
+<section class="block">
+  <h2 class="block__title">批次结论<span class="block__hint">{{ returns.conclusion.headline }}</span></h2>
+  <p class="lede">{{ returns.conclusion.detail }}</p>
+  <p class="aside">{{ returns.conclusion.scope }}</p>
+  <ul class="pairs pairs--two">
+    <li class="pair"><span class="pair__key">回传覆盖率</span><span class="pair__value num">{{ returns.coverage.rate|pct }}<span class="sub">{{ returns.coverage.numerator }} / {{ returns.coverage.denominator }} 单 · 范围 0%–100%</span></span></li>
+    <li class="pair"><span class="pair__key">已回传字段质量分</span><span class="pair__value num">{{ returns.quality.score if returns.quality.defined else "不可计算" }}<span class="sub">只评已回传 {{ returns.matching.representative_records }} 条 · 范围 0–100</span></span></li>
+    <li class="pair"><span class="pair__key">质量扣分</span><span class="pair__value num">{{ returns.batch.quality_deduction }}<span class="sub">100 − 质量分</span></span></li>
+    <li class="pair"><span class="pair__key">覆盖扣分</span><span class="pair__value num">{{ returns.batch.coverage_deduction }}<span class="sub">质量分 × (1 − 覆盖率)</span></span></li>
+    <li class="pair"><span class="pair__key">分数闭合</span><span class="pair__value num">{% if returns.batch.closed %}<span class="ok">闭合</span>{% else %}<span class="bad">不闭合</span>{% endif %}<span class="sub">批次分 + 质量扣分 + 覆盖扣分 = 100</span></span></li>
+    <li class="pair"><span class="pair__key">附件采纳记录</span><span class="pair__value num">{{ returns.matching.attachment_records }}<span class="sub">代表 {{ returns.matching.representative_records }} + 重复 {{ returns.matching.duplicate_records }} + 名单外 {{ returns.matching.off_roster_records }}</span></span></li>
+  </ul>
+</section>
+
+<section class="block">
+  <h2 class="block__title">四类差异<span class="block__hint">计数单位不同：未回传按工单，其余按附件记录</span></h2>
+  <table class="ledger ledger--wide">
+    <thead><tr><th>差异类</th><th class="num">计数</th><th>单位</th><th>定义</th><th>原因码</th></tr></thead>
+    <tbody>
+      {% for item in returns.diffs %}
+      <tr>
+        <td>{{ item.label }}</td>
+        <td class="num">{{ item.count|intf }}</td>
+        <td>{{ item.unit }}</td>
+        <td class="note-cell">{{ item.definition }}</td>
+        <td class="mono">{{ item.code }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="block">
+  <h2 class="block__title">未回传工单<span class="block__hint">{{ returns.unreturned.count }} 单 · 未回传不计入质量分母</span></h2>
+  {% if returns.unreturned.count %}
+  <table class="ledger">
+    <thead><tr><th>工单号</th><th>状态</th></tr></thead>
+    <tbody>
+      {% for ticket in returns.unreturned.tickets %}
+      <tr><td class="mono">{{ ticket }}</td><td><span class="tag">未回传</span></td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if returns.unreturned.truncated %}<p class="aside">其余未回传工单见导出的差异明细。</p>{% endif %}
+  {% else %}
+  <p class="empty">名单内工单全部回传。</p>
+  {% endif %}
+</section>
+
+<section class="block">
+  <h2 class="block__title">已回传字段质量<span class="block__hint">分母 = 已回传代表记录 {{ returns.matching.representative_records }} 条 × 10 字段</span></h2>
+  <table class="ledger">
+    <thead><tr><th>维度</th><th class="num">分子</th><th class="num">分母</th><th class="num">比率</th><th class="num">容忍度</th><th class="num">扣分</th></tr></thead>
+    <tbody>
+      {% for dim in returns.quality.dims %}
+      <tr>
+        <td>{{ dim.label }}</td>
+        <td class="num">{{ dim.numerator|intf }}</td>
+        <td class="num">{{ dim.denominator|intf }}</td>
+        <td class="num">{{ dim.rate|pct }}</td>
+        <td class="num">{{ dim.tolerance|pct }}</td>
+        <td class="num">{{ dim.penalty }}{% if dim.capped %} <span class="tag">封顶</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="aside">{{ returns.quality.formula }}。{{ returns.quality.note }}。</p>
+</section>
+
+<section class="block">
+  <h2 class="block__title">缺字段记录<span class="block__hint">已回传记录里有缺失格的那些，不等于未回传</span></h2>
+  {% set missing_diff = (returns.diffs|selectattr("key", "equalto", "missing_fields")|list|first) %}
+  {% set missing_items = missing_diff["items"] if missing_diff else [] %}
+  {% if missing_items %}
+  <table class="ledger">
+    <thead><tr><th>工单号</th><th class="num">行号</th><th>缺失字段</th></tr></thead>
+    <tbody>
+      {% for item in missing_items %}
+      <tr><td class="mono">{{ item.ticket }}</td><td class="num">{{ item.lineno }}</td><td>{{ item.labels|join(" / ") }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">已回传记录没有缺失字段。</p>
+  {% endif %}
+</section>
+
+<section class="block">
+  <h2 class="block__title">评分口径<span class="block__hint">三个数各答一个问题，范围写在这里</span></h2>
+  <table class="ledger ledger--wide">
+    <thead><tr><th>口径</th><th>范围</th><th>分子</th><th>分母</th><th>说明</th></tr></thead>
+    <tbody>
+      {% for scope in returns.scopes %}
+      <tr>
+        <td>{{ scope.label }}</td>
+        <td class="mono">{{ scope.range }}</td>
+        <td class="note-cell">{{ scope.numerator }}</td>
+        <td class="note-cell">{{ scope.denominator }}</td>
+        <td class="note-cell">{{ scope.note }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="block">
+  <h2 class="block__title">版本<span class="block__hint">当前生效 v{{ return_status.active_version }}</span></h2>
+  {% if return_status.versions %}
+  <table class="ledger">
+    <thead><tr><th class="num">版本</th><th>输入摘要</th><th>名单摘要</th><th>附件摘要</th><th>时间</th></tr></thead>
+    <tbody>
+      {% for item in return_status.versions %}
+      <tr{% if item.version == return_status.active_version %} class="row--on"{% endif %}>
+        <td class="num">v{{ item.version }}</td>
+        <td class="mono">{{ item.digest[:16] }}</td>
+        <td class="mono">{{ item.roster_digest[:12] }}</td>
+        <td class="mono">{{ item.attachment_digest[:12] }}</td>
+        <td class="mono">{{ item.updated_at|localdt }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">还没有版本。</p>
+  {% endif %}
+</section>
+
+<section class="block">
+  <h2 class="block__title">替换与重试账<span class="block__hint">同输入重试只累计次数，不新增版本</span></h2>
+  {% if return_status.attempts %}
+  <table class="ledger ledger--wide">
+    <thead><tr><th>结果</th><th>输入摘要</th><th class="num">次数</th><th class="num">版本</th><th>最近</th><th>说明</th></tr></thead>
+    <tbody>
+      {% for item in return_status.attempts %}
+      <tr>
+        <td>{{ item.outcome }}</td>
+        <td class="mono">{{ item.digest[:16] }}</td>
+        <td class="num">{{ item.hits }}</td>
+        <td class="num">{% if item.version %}v{{ item.version }}{% else %}—{% endif %}</td>
+        <td class="mono">{{ item.last_at|localdt }}</td>
+        <td class="note-cell">{{ item.detail.note or item.detail.error or "" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">还没有替换记录。</p>
+  {% endif %}
+</section>
+
+<section class="block">
+  <h2 class="block__title">导出<span class="block__hint">首段写明口径与取值范围</span></h2>
+  <p class="links">
+    <a class="link" href="/api/export/returns-report.csv?batch={{ returns.run.batch }}">结论汇总 CSV</a>
+    <a class="link" href="/api/export/returns-diffs.csv?batch={{ returns.run.batch }}">四类差异明细 CSV</a>
+    <a class="link" href="/api/export/returns-manifest.json?batch={{ returns.run.batch }}">回传运行清单 JSON</a>
+  </p>
+</section>
+
+{% else %}
+<p class="empty">{% if return_error == "E_RUN_NOT_FOUND" %}还没有回传批次。{% else %}还没有回传批次。{% endif %}</p>
+{% endif %}
+
+<section class="block block--form">
+  <h2 class="block__title">载入批次</h2>
+  <form id="returns-form" class="form"
+        data-batch="{{ return_batch }}"
+        data-version="{{ return_status.active_version }}">
+    <label class="field field--narrow">
+      <span class="field__label">批次</span>
+      <input class="field__input" type="text" name="batch" id="batch-input" value="{{ return_batch }}" autocomplete="off">
+    </label>
+    <label class="field">
+      <span class="field__label">计划名单 CSV</span>
+      <input class="field__input" type="file" name="roster" id="roster-input" accept=".csv,text/csv">
+    </label>
+    <label class="field">
+      <span class="field__label">回传附件 CSV</span>
+      <input class="field__input" type="file" name="attachment" id="attachment-input" accept=".csv,text/csv">
+    </label>
+    <label class="field field--narrow">
+      <span class="field__label">编码</span>
+      <input class="field__input" type="text" name="encoding" id="encoding-input" placeholder="utf-8" autocomplete="off">
+    </label>
+    <div class="actions">
+      <button class="btn btn--primary" type="submit" id="upload-btn">核对并替换</button>
+      <button class="btn" type="button" id="sample-btn">载入回传样例</button>
+    </div>
+  </form>
+  <p class="aside">只上传名单或只上传附件时，另一份沿用当前生效版本；替换失败会保留旧版并回滚指针。</p>
+  <p class="status" id="form-status" role="status" aria-live="polite"></p>
+</section>
+{% endblock %}

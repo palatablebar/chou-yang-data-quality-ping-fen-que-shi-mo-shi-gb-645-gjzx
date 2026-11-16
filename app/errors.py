@@ -40,6 +40,13 @@ class UnprocessableInput(QualiscoreError):
     code = "E_INPUT"
 
 
+class ReplaceFailed(QualiscoreError):
+    """回传附件替换失败：写入或切换指针出错，旧版仍然生效，可重试。"""
+
+    status_code = 500
+    code = "E_RETURN_REPLACE_FAILED"
+
+
 def install_handlers(app) -> None:
     from fastapi import Request
     from fastapi.responses import JSONResponse

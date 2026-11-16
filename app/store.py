@@ -48,6 +48,45 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_identity ON runs(name, digest, rules_version);
 CREATE INDEX IF NOT EXISTS idx_runs_version ON runs(name, version DESC);
+
+CREATE TABLE IF NOT EXISTS return_batches (
+    batch TEXT PRIMARY KEY,
+    active_version INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS return_versions (
+    batch TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    digest TEXT NOT NULL,
+    roster_digest TEXT NOT NULL,
+    attachment_digest TEXT NOT NULL,
+    roster_text TEXT NOT NULL,
+    attachment BLOB NOT NULL,
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    seen_seq INTEGER NOT NULL,
+    PRIMARY KEY (batch, version)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_return_identity
+    ON return_versions(batch, digest);
+CREATE INDEX IF NOT EXISTS idx_return_version
+    ON return_versions(batch, version DESC);
+CREATE TABLE IF NOT EXISTS return_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    version INTEGER,
+    detail TEXT NOT NULL,
+    hits INTEGER NOT NULL DEFAULT 1,
+    first_at TEXT NOT NULL,
+    last_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_return_attempt
+    ON return_attempts(batch, digest, outcome);
+CREATE INDEX IF NOT EXISTS idx_return_attempt_batch
+    ON return_attempts(batch, last_at DESC);
 """
 
 
@@ -176,3 +215,190 @@ class Store:
     def count_runs(self) -> int:
         with self.connect() as conn:
             return int(conn.execute("SELECT COUNT(*) AS n FROM runs").fetchone()["n"])
+
+    # ---------- 回传批次 ----------
+    def active_return_version(self, batch: str) -> int:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT active_version FROM return_batches WHERE batch=?",
+                (batch,)).fetchone()
+        return int(row["active_version"]) if row else 0
+
+    def find_return_version(self, batch: str, digest: str) -> dict | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """SELECT batch,version,digest,roster_digest,attachment_digest,
+                          created_at,updated_at,seen_seq
+                   FROM return_versions WHERE batch=? AND digest=?""",
+                (batch, digest)).fetchone()
+        return dict(row) if row else None
+
+    def get_return_version(self, batch: str, version: int) -> dict | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """SELECT batch,version,digest,roster_digest,attachment_digest,
+                          created_at,updated_at,seen_seq
+                   FROM return_versions WHERE batch=? AND version=?""",
+                (batch, version)).fetchone()
+        return dict(row) if row else None
+
+    def active_return_record(self, batch: str) -> dict | None:
+        """当前生效版本：替换失败回滚后，指针可能低于已写下的最高版本。"""
+        with self.connect() as conn:
+            row = conn.execute(
+                """SELECT v.batch,v.version,v.digest,v.roster_digest,
+                          v.attachment_digest,v.created_at,v.updated_at,v.seen_seq
+                   FROM return_versions v
+                   JOIN return_batches b
+                     ON b.batch=v.batch AND b.active_version=v.version
+                   WHERE v.batch=?""",
+                (batch,)).fetchone()
+        return dict(row) if row else None
+
+    def active_return_record_any(self) -> dict | None:
+        """跨批次取最近查看的生效版本。"""
+        with self.connect() as conn:
+            row = conn.execute(
+                """SELECT v.batch,v.version,v.digest,v.roster_digest,
+                          v.attachment_digest,v.created_at,v.updated_at,v.seen_seq
+                   FROM return_versions v
+                   JOIN return_batches b
+                     ON b.batch=v.batch AND b.active_version=v.version
+                   ORDER BY v.seen_seq DESC, v.updated_at DESC LIMIT 1"""
+            ).fetchone()
+        return dict(row) if row else None
+
+    def max_return_version(self, batch: str) -> int:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT MAX(version) AS v FROM return_versions WHERE batch=?",
+                (batch,)).fetchone()
+        return int(row["v"] or 0)
+
+    def delete_return_version(self, batch: str, version: int) -> None:
+        """只删未生效的失败快照；生效版本的原文与结果一律不删。"""
+        with self.connect() as conn:
+            conn.execute(
+                """DELETE FROM return_versions
+                   WHERE batch=? AND version=?
+                     AND version NOT IN (SELECT active_version FROM return_batches
+                                         WHERE batch=?)""",
+                (batch, int(version), batch))
+
+    def save_return_version(self, *, batch: str, version: int, digest: str,
+                            roster_digest: str, attachment_digest: str,
+                            roster_text: str, attachment: bytes,
+                            result: dict, stamp: str) -> None:
+        """一次新版本：结果快照与两份输入原文同事务写入。
+
+        版本号由调用方在写锁内取到；同批次同版本只会写一次。写入不等于生效，
+        指针切换由 activate_return_version 单独完成。
+        """
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO return_versions (batch,version,digest,roster_digest,
+                        attachment_digest,roster_text,attachment,result_json,
+                        created_at,updated_at,seen_seq)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (batch, int(version), digest, roster_digest, attachment_digest,
+                 roster_text, attachment,
+                 json.dumps(result, ensure_ascii=False), stamp, stamp,
+                 self._next_seq(conn)))
+
+    def activate_return_version(self, batch: str, version: int, stamp: str) -> None:
+        """切换生效指针；只有快照已完整写入的版本才会被指到。"""
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO return_batches (batch,active_version,updated_at)
+                   VALUES (?,?,?)
+                   ON CONFLICT(batch) DO UPDATE SET
+                     active_version=excluded.active_version,
+                     updated_at=excluded.updated_at""",
+                (batch, int(version), stamp))
+
+    def rollback_return_version(self, batch: str, attempted: int, fallback: int,
+                                stamp: str) -> None:
+        """只在指针仍指向本次尝试的版本时回退，避免把别处刚切好的新版本顶掉。"""
+        with self.connect() as conn:
+            conn.execute(
+                """UPDATE return_batches SET active_version=?, updated_at=?
+                   WHERE batch=? AND active_version=?""",
+                (int(fallback), stamp, batch, int(attempted)))
+
+    def touch_return_version(self, batch: str, version: int, stamp: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE return_versions SET updated_at=?, seen_seq=?"
+                " WHERE batch=? AND version=?",
+                (stamp, self._next_seq(conn), batch, int(version)))
+
+    def load_return_result(self, batch: str, version: int) -> dict | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT result_json FROM return_versions WHERE batch=? AND version=?",
+                (batch, int(version))).fetchone()
+        return json.loads(row["result_json"]) if row else None
+
+    def load_return_inputs(self, batch: str, version: int) -> dict | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """SELECT roster_text, attachment FROM return_versions
+                   WHERE batch=? AND version=?""",
+                (batch, int(version))).fetchone()
+        if row is None:
+            return None
+        return {"roster_text": row["roster_text"], "attachment": row["attachment"]}
+
+    def list_return_versions(self, batch: str, limit: int = 12) -> list[dict]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT batch,version,digest,roster_digest,attachment_digest,
+                          created_at,updated_at
+                   FROM return_versions WHERE batch=? ORDER BY version DESC LIMIT ?""",
+                (batch, limit)).fetchall()
+        return [dict(row) for row in rows]
+
+    def record_return_attempt(self, *, batch: str, digest: str, outcome: str,
+                              version: int | None, detail: dict,
+                              stamp: str) -> dict:
+        """同批次同输入同结果的尝试只累加 hits，不新增行，也不丢记录。
+
+        返回该尝试的最新累计次数；替换失败与成功分开计（outcome 不同），
+        失败一次后重试成功会同时留下两条，便于说明「重试不重复计数」。
+        """
+        payload = json.dumps(detail, ensure_ascii=False)
+        with self.connect() as conn:
+            row = conn.execute(
+                """SELECT id,hits FROM return_attempts
+                   WHERE batch=? AND digest=? AND outcome=?""",
+                (batch, digest, outcome)).fetchone()
+            if row is None:
+                conn.execute(
+                    """INSERT INTO return_attempts (batch,digest,outcome,version,
+                            detail,hits,first_at,last_at)
+                       VALUES (?,?,?,?,?,1,?,?)""",
+                    (batch, digest, outcome,
+                     None if version is None else int(version), payload, stamp, stamp))
+                hits = 1
+            else:
+                hits = int(row["hits"]) + 1
+                conn.execute(
+                    """UPDATE return_attempts SET hits=?, last_at=?, version=?,
+                            detail=? WHERE id=?""",
+                    (hits, stamp, None if version is None else int(version),
+                     payload, row["id"]))
+        return {"outcome": outcome, "hits": hits}
+
+    def list_return_attempts(self, batch: str, limit: int = 20) -> list[dict]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT batch,digest,outcome,version,detail,hits,first_at,last_at
+                   FROM return_attempts WHERE batch=?
+                   ORDER BY last_at DESC, id DESC LIMIT ?""",
+                (batch, limit)).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            item["detail"] = json.loads(item["detail"])
+            items.append(item)
+        return items

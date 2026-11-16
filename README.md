@@ -18,7 +18,8 @@
 | 重复判定 | 全行哈希账与业务键账分开；同键不同值的两行都保留原值并列出冲突列 |
 | 稳健离群 | 中位数 + MAD 稳健 z，MAD=0 回退 IQR/1.349，离散度低于刻度下限判退化 |
 | 评分 | 100 − 缺失 30 − 重复 25 − 离群 20 − 格式 25，每维按容忍度封顶，Decimal 计分 |
-| 批次与导出 | run_id、输入 sha256、版本自增、同输入幂等复用、陈旧提交 409、六种 CSV + 清单 JSON |
+| 回传核对 | 计划名单 × 附件：未回传 / 名单外 / 重复记录 / 缺字段 四类差异；覆盖率与已回传字段质量分分开算，批次分 = 质量分 × 覆盖率 |
+| 批次与导出 | run_id、输入 sha256、版本自增、同输入幂等复用、陈旧提交 409、六种 CSV + 清单 JSON（回传另有三种导出） |
 
 ## 功能模块
 
@@ -31,6 +32,7 @@
 | M5 稳健离群 | `GET /api/outliers`、页面 `/outliers` | `app/modules/m5_outliers/robust.py`、`zscore.py`、`flags.py` | `tests/test_m5_outliers.py` |
 | M6 评分与批次 | `POST /api/score`、`GET /api/batches`、`GET /api/reconcile`、页面 `/batches` | `app/modules/m6_score/score.py`、`grade.py`、`runstore.py`、`service.py` | `tests/test_m6_score.py` |
 | M7 报告导出 | `GET /`、`GET /api/export/*` | `app/modules/m7_export/report.py`、`csv_out.py`、`manifest_out.py` | `tests/test_m7_export.py` |
+| M8 回传核对 | `POST /api/returns/check`、`POST /api/returns/upload`、`GET /api/returns`、页面 `/returns` | `app/modules/m8_returns/roster.py`、`reconcile.py`、`service.py`、`exports.py` | `tests/test_m8_returns.py` |
 
 ## 核心规则
 
@@ -45,6 +47,9 @@
    总分 = 100 − 扣分之和，恒在 [0, 100]，`总分 + 扣分之和 = 100` 逐位成立。
 5. **幂等与版本**：同名数据集按内容 sha256 + 规则版本 + 阈值摘要识别，
    同输入重跑返回同一运行记录；客户端版本落后于库里版本时返回 409。
+6. **回传两口径**：覆盖率只按名单工单算；字段质量分只按已回传代表记录算，
+   未回传工单不进分母；批次分 = 质量分 × 覆盖率，三项闭合到 100。
+   四类差异互斥，附件记录满足「采纳 = 代表 + 重复 + 名单外」。
 
 ## 启动
 
@@ -64,6 +69,10 @@ open http://127.0.0.1:18204/
 4. `/outliers` 看 `first_response_min` 的极端值与 `satisfaction` 的退化标记。
 5. `/batches` 看版本、阈值与五项对账；再点「重跑」验证幂等复用。
 6. 任一页面底部导出 CSV，或直接 `curl /api/export/manifest.json` 取运行清单。
+7. `/returns` 点「载入回传样例」：48 单计划名单、附件回传 40 单，
+   同时看到 8 单未回传、2 条名单外、2 条重复、6 条缺字段；结论是
+   覆盖率 83.33%、已回传字段质量 87.85 分、批次分 73.21（C）。
+   再点一次「载入回传样例」验证同输入重试不新增版本。
 
 ## API 与页面
 
@@ -83,25 +92,31 @@ open http://127.0.0.1:18204/
 | GET | `/api/batches` | 运行历史 |
 | GET | `/api/reconcile` | 五项对账 |
 | GET | `/api/export/report.csv` 等 | 六种 CSV + `manifest.json` |
-| GET | `/`、`/profile`、`/missing`、`/duplicates`、`/outliers`、`/batches` | 六个页面 |
+| POST | `/api/returns/check` | 回传核对（JSON：`batch` + `sample`，或 `roster`/`attachment` 文本） |
+| POST | `/api/returns/upload` | 回传核对（multipart：`batch` + `roster` + `attachment`） |
+| GET | `/api/returns`、`/api/returns/status` | 当前回传结论；版本与替换/重试账 || GET | `/api/export/returns-report.csv` 等 | 回传结论汇总、四类差异明细、回传运行清单 |
+| GET | `/`、`/returns`、`/profile`、`/missing`、`/duplicates`、`/outliers`、`/batches` | 七个页面 |
 
 ## 目录
 
 ```text
 app/
   main.py config.py errors.py reasons.py manifest.py store.py web.py
-  modules/m1_ingest … m7_export/   每个模块 handler + service + 3 个规则/读写文件
-  templates/  base.html + 6 页
-  static/     theme.css layout.css components.css app.js table.js charts.js
+  modules/m1_ingest … m8_returns/   每个模块 handler + service + 3 个规则/读写文件
+  templates/  base.html + 7 页
+  static/     theme.css layout.css components.css app.js table.js charts.js returns.js
 docs/         DEPTH.md DATA-DICTIONARY.md RUNBOOK.md
-sample_data/  9 个 CSV（脏、干净、GB18030、BOM、截断、常量列、仅表头、空行、空文件）
-tests/        conftest.py + 7 个模块测试 + e2e + invariants + fixtures
+sample_data/  11 个 CSV（脏、干净、GB18030、BOM、截断、常量列、仅表头、空行、空文件、
+              回传名单 48 单、回传附件 40/48）
+tests/        conftest.py + 8 个模块测试 + e2e + invariants + fixtures
 ```
 
 ## 定义与已覆盖
 
 列契约、单位、刻度、空值三态、去重键、评分常量、等级阈值见
-`docs/DATA-DICTIONARY.md`；陷阱登记与测试映射见 `docs/DEPTH.md`。
+`docs/DATA-DICTIONARY.md`（回传核对四类差异与两口径评分见 §10）；
+陷阱登记与测试映射见 `docs/DEPTH.md`。
 
 不覆盖：多表关联、增量追加（每次按整份文件算）、图表之外的统计检验、
-自定义权重（权重与容忍度写在配置里，改完需重新运行）。
+自定义权重（权重与容忍度写在配置里，改完需重新运行）、
+回传核对的跨批次趋势与名单内其他字段校验。

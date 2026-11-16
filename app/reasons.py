@@ -17,6 +17,9 @@ REASONS: dict[str, dict[str, str]] = {
     "E_RUN_NOT_FOUND": {"label": "运行记录不存在", "level": "error"},
     "E_STALE_RUN": {"label": "提交版本已过期", "level": "error"},
     "E_EMPTY_UPLOAD": {"label": "上传内容为空", "level": "error"},
+    "E_ROSTER_EMPTY": {"label": "计划名单为空", "level": "error"},
+    "E_RETURN_NO_BASE": {"label": "缺少可替换的基线版本", "level": "error"},
+    "E_RETURN_REPLACE_FAILED": {"label": "附件替换失败，旧版仍生效", "level": "error"},
     "Q_COLUMN_COUNT": {"label": "列数与表头不一致", "level": "error"},
     "Q_TRUNCATED_ROW": {"label": "末行被截断", "level": "error"},
     "K_BLANK_ROW": {"label": "空行已跳过", "level": "info"},
@@ -38,6 +41,14 @@ REASONS: dict[str, dict[str, str]] = {
     "K_KEY_CONFLICT": {"label": "同键取值冲突", "level": "warn"},
     "K_CAPPED": {"label": "该维扣分已封顶", "level": "info"},
     "K_REPLAY": {"label": "同输入重跑复用", "level": "info"},
+    "K_UNRETURNED": {"label": "未回传", "level": "warn"},
+    "K_OFF_ROSTER": {"label": "名单外记录", "level": "warn"},
+    "K_DUP_RETURN": {"label": "重复回传记录", "level": "info"},
+    "K_MISSING_FIELD": {"label": "已回传记录缺字段", "level": "warn"},
+    "K_ROSTER_DUP": {"label": "名单内工单号重复", "level": "info"},
+    "K_RETURN_COVERAGE": {"label": "回传覆盖率", "level": "info"},
+    "K_RETURN_QUALITY": {"label": "字段质量分（已回传）", "level": "info"},
+    "K_RETURN_BATCH": {"label": "批次分（覆盖折算）", "level": "info"},
 }
 
 
